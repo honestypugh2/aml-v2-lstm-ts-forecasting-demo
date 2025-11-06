@@ -131,7 +131,8 @@ dmypy.json
 .pyre/
 
 # Azure ML specific
-outputs/
+outputs/*
+outputs/*models
 logs/
 .azureml/
 azureml-logs/
@@ -142,10 +143,14 @@ mlruns/
 mlartifacts/
 
 # Data files
+data/*
 data/raw/*.csv
+data/processed/*.csv
+data/processed/*.npy
 data/processed/*.pkl
 *.h5
 *.hdf5
+!data/.gitkeep
 
 # Model files
 *.pth
@@ -162,3 +167,6 @@ data/processed/*.pkl
 # OS files
 .DS_Store
 Thumbs.db
+
+# Typings
+*.pyi
