@@ -167,6 +167,3 @@ data/processed/*.pkl
 # OS files
 .DS_Store
 Thumbs.db
-
-# Typings
-*.pyi
