@@ -1,0 +1,220 @@
+# Pipeline Configuration
+# This file contains configuration parameters for Azure ML pipelines
+
+# Model Configuration
+model:
+  type: "lstm"
+  input_size: null  # Will be determined from data
+  hidden_size: 64
+  num_layers: 2
+  output_size: 1
+  dropout: 0.2
+  sequence_length: 30
+  forecast_horizon: 7
+
+# Training Configuration
+training:
+  batch_size: 32
+  learning_rate: 0.001
+  num_epochs: 100
+  validation_split: 0.2
+  early_stopping_patience: 10
+  optimizer: "adam"
+  loss_function: "mse"
+
+# Data Configuration
+data:
+  target_column: "value"
+  date_column: "date"
+  train_ratio: 0.7
+  val_ratio: 0.2
+  test_ratio: 0.1
+  
+  # Feature Engineering
+  create_lag_features: true
+  lag_periods: [1, 7, 30]
+  create_rolling_features: true
+  rolling_windows: [7, 30]
+  create_time_features: true
+
+# Azure ML Configuration
+azure_ml:
+  compute_target: "cpu-cluster"
+  environment_name: "lstm-training-env"
+  experiment_name: "lstm-forecasting-experiment"
+  
+  # Compute Cluster Settings
+  compute:
+    vm_size: "Standard_DS3_v2"
+    min_nodes: 0
+    max_nodes: 4
+    idle_seconds_before_scaledown: 300
+
+# MLflow Configuration
+mlflow:
+  tracking_uri: "./mlruns"
+  experiment_name: "lstm-time-series-forecasting"
+  log_model: true
+  log_artifacts: true
+  
+  # Auto-logging
+  autolog:
+    pytorch: true
+    log_models: true
+    log_datasets: true
+
+# Hyperparameter Tuning (for Azure ML Hyperdrive)
+hyperparameter_tuning:
+  enabled: false
+  method: "random"  # random, grid, bayesian
+  max_total_runs: 20
+  max_concurrent_runs: 4
+  
+  parameters:
+    hidden_size:
+      type: "choice"
+      values: [32, 64, 128, 256]
+    
+    num_layers:
+      type: "choice" 
+      values: [1, 2, 3]
+    
+    learning_rate:
+      type: "loguniform"
+      min_value: 0.0001
+      max_value: 0.1
+    
+    dropout:
+      type: "uniform"
+      min_value: 0.1
+      max_value: 0.5
+    
+    batch_size:
+      type: "choice"
+      values: [16, 32, 64, 128]
+
+# Model Evaluation
+evaluation:
+  metrics:
+    - "rmse"
+    - "mae" 
+    - "mape"
+    - "r2_score"
+  
+  # Validation Strategy
+  cross_validation:
+    enabled: false
+    folds: 5
+    strategy: "time_series_split"
+  
+  # Model Selection
+  model_selection:
+    metric: "rmse"
+    direction: "minimize"
+
+# Deployment Configuration
+deployment:
+  model_name: "lstm-time-series-model"
+  endpoint_name: "lstm-forecasting-endpoint"
+  deployment_name: "lstm-forecasting-deployment"
+  
+  # Endpoint Configuration
+  endpoint:
+    auth_mode: "key"
+    instance_type: "Standard_DS3_v2"
+    instance_count: 1
+    
+  # Auto-scaling
+  auto_scaling:
+    enabled: true
+    min_instances: 1
+    max_instances: 3
+    target_utilization: 70
+
+# Monitoring and Alerting
+monitoring:
+  data_drift:
+    enabled: true
+    threshold: 0.3
+    frequency: "daily"
+  
+  model_performance:
+    enabled: true
+    threshold_rmse: 10.0
+    frequency: "daily"
+  
+  # Alerts
+  alerts:
+    email_notifications: true
+    slack_webhook: null
+
+# Data Pipeline
+data_pipeline:
+  # Data Sources
+  sources:
+    - type: "csv"
+      path: "data/raw/time_series_data.csv"
+    - type: "azure_blob"
+      connection_string: null
+      container: "data"
+      blob_path: "time-series/"
+  
+  # Data Validation
+  validation:
+    check_missing_values: true
+    check_data_types: true
+    check_date_range: true
+    check_outliers: true
+  
+  # Data Preprocessing
+  preprocessing:
+    handle_missing_values: "interpolate"  # drop, interpolate, forward_fill
+    outlier_treatment: "clip"  # clip, remove, transform
+    normalization: "standard"  # standard, minmax, robust
+
+# Logging and Debugging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # File Logging
+  file_logging:
+    enabled: true
+    path: "outputs/logs/pipeline.log"
+    max_size: "10MB"
+    backup_count: 5
+
+# Resource Management
+resources:
+  # Memory and CPU limits
+  limits:
+    memory: "8Gi"
+    cpu: "4"
+  
+  # Requests
+  requests:
+    memory: "4Gi" 
+    cpu: "2"
+  
+  # Timeout Settings
+  timeouts:
+    training: 7200  # 2 hours
+    inference: 300  # 5 minutes
+
+# Reproducibility
+reproducibility:
+  random_seed: 42
+  deterministic: true
+  benchmark: false
+
+# Development and Testing
+development:
+  debug_mode: false
+  sample_data_size: null  # Use full dataset when null
+  quick_test: false  # Use smaller epochs/data for testing
+  
+  # Testing Configuration
+  testing:
+    unit_tests: true
+    integration_tests: true
+    performance_tests: false

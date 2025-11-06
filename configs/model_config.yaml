@@ -1,0 +1,34 @@
+# Model configuration
+model:
+  input_size: 1
+  hidden_size: 50
+  num_layers: 2
+  output_size: 1
+  dropout: 0.2
+  bidirectional: false
+
+# Training configuration
+training:
+  learning_rate: 0.001
+  batch_size: 32
+  num_epochs: 100
+  sequence_length: 60
+  train_split: 0.8
+  val_split: 0.1
+  
+# Data configuration
+data:
+  target_column: "value"
+  date_column: "date"
+  forecast_horizon: 1
+  
+# MLflow configuration
+mlflow:
+  experiment_name: "lstm-time-series-forecasting"
+  tracking_uri: null  # Use default
+  
+# Azure ML configuration
+azure_ml:
+  compute_cluster: "cpu-cluster"
+  environment_name: "lstm-training-env"
+  experiment_name: "lstm-forecasting-experiment"
