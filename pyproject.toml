@@ -51,7 +51,7 @@ docstring-code-format = true
 typeCheckingMode = "off"
 venvPath = "."
 venv = ".venv"
-exclude = ["typings", ".venv", "notebooks", ]
+exclude = ["typings", ".venv", "notebooks"]
 
 [build-system]
 requires = ["poetry-core"]
