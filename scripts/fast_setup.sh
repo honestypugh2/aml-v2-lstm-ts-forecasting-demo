@@ -7,10 +7,10 @@ set -e
 
 echo "🚀 Starting fast setup for Azure ML LSTM project..."
 
-# Check if Poetry is installed
-if ! command -v poetry &> /dev/null; then
-    echo "❌ Poetry is not installed. Please install Poetry first:"
-    echo "   curl -sSL https://install.python-poetry.org | python3 -"
+# Check if uv is installed
+if ! command -v uv &> /dev/null; then
+    echo "❌ uv is not installed. Please install uv first:"
+    echo "   curl -LsSf https://astral.sh/uv/install.sh | sh"
     exit 1
 fi
 
@@ -21,13 +21,13 @@ if [ ! -f ".env" ]; then
     echo "✅ Please edit .env with your Azure ML workspace details"
 fi
 
-# Install dependencies with Poetry
-echo "📦 Installing dependencies with Poetry..."
-poetry install --only main
+# Install dependencies with uv (main only)
+echo "📦 Installing dependencies with uv..."
+uv sync --no-dev
 
 # Verify PyTorch installation
 echo "🔍 Verifying PyTorch installation..."
-poetry run python -c "import torch; print(f'✅ PyTorch {torch.__version__} installed successfully')"
+uv run python -c "import torch; print(f'✅ PyTorch {torch.__version__} installed successfully')"
 
 # Create necessary directories if they don't exist
 echo "📁 Creating necessary directories..."
@@ -50,8 +50,7 @@ echo "🎉 Fast setup completed successfully!"
 echo ""
 echo "📚 Next steps:"
 echo "1. Edit .env with your Azure ML workspace configuration"
-echo "2. Run: poetry shell"
-echo "3. Start with notebooks/01_setup_workspace.ipynb"
+echo "2. Start with notebooks/01_setup_workspace.ipynb"
 echo "4. Follow the training pipeline in src/training/train_lstm.py"
 echo ""
 echo "🔗 Documentation: README.md"

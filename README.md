@@ -22,14 +22,14 @@ This project implements an end-to-end LSTM Time Series Forecasting solution usin
 - **Azure Machine Learning v2 SDK**
 - **PyTorch LSTM models (CPU-only)**
 - **MLflow for experiment tracking**
-- **Poetry for dependency management**
+- **uv for fast, cross-platform dependency management**
 - **MLOps pipelines and automation**
 
 ## 🚀 Key Features
 
 - Complete project structure with modular architecture
 - CPU-only PyTorch installation (no CUDA dependencies)
-- Optimized Poetry configuration for fast dependency resolution
+- Cross-platform setup (Linux, macOS, Windows) with uv
 - Azure ML workspace integration with proper permissions
 - MLflow experiment tracking with v2 compatibility
 - Docker environment setup
@@ -41,13 +41,15 @@ This project implements an end-to-end LSTM Time Series Forecasting solution usin
 ```
 aml-sdk-demo/
 ├── README.md                      # Project documentation
-├── pyproject.toml                 # Poetry configuration (CPU-only)
-├── poetry.lock                    # Clean lockfile
+├── pyproject.toml                 # Project configuration (PEP 621, CPU-only PyTorch)
+├── uv.lock                        # Cross-platform lockfile
 ├── environment.yml                # Conda environment
 ├── requirements.in                # Input requirements
 ├── .env.example                   # Environment variables template
-├── setup.sh                       # Environment setup script
-├── fast_setup.sh                  # Quick setup script
+├── setup.sh                       # Environment setup script (Linux/macOS)
+├── setup.ps1                      # Environment setup script (Windows)
+├── fast_setup.sh                  # Quick setup script (Linux/macOS)
+├── fast_setup.ps1                 # Quick setup script (Windows)
 ├── LICENSE                        # Project license
 │
 ├── src/                           # Source code
@@ -101,7 +103,8 @@ aml-sdk-demo/
 │   └── requirements.txt           # Docker dependencies
 │
 ├── scripts/                       # Setup and utility scripts
-│   └── fast_setup.sh              # Quick environment setup
+│   ├── fast_setup.sh              # Quick environment setup (Linux/macOS)
+│   └── fast_setup.ps1             # Quick environment setup (Windows)
 │
 ├── data/                          # Data directory
 │
@@ -155,8 +158,13 @@ python --version  # Should show 3.11.x or higher
 # Azure CLI (latest version)
 az --version
 
-# Poetry for dependency management
-poetry --version
+# uv for dependency management (https://docs.astral.sh/uv/)
+# Linux/macOS:
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Windows (PowerShell):
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+uv --version
 ```
 
 #### Environment Variables
@@ -176,23 +184,30 @@ AZURE_LOCATION="eastus2"  # or your preferred region
 
 ### Step 1: Clone and Install Dependencies
 
+**Linux / macOS:**
 ```bash
 # Clone the repository
 git clone <repository-url>
 cd aml-sdk-demo
 
-# Create a directory to point the virtual environment created by Poetry in your project directory
-mkdir .venv
-
-# Install dependencies (fast, no CUDA downloads)
-poetry install --no-root
-
-# Activate virtual environment
-poetry shell
+# Install dependencies (creates .venv automatically, no CUDA downloads)
+uv sync
 
 # Add environment to Jupyter kernelspec to use in Notebook
-python -m ipykernel install --user --name .venv
+uv run python -m ipykernel install --user --name .venv
+```
 
+**Windows (PowerShell):**
+```powershell
+# Clone the repository
+git clone <repository-url>
+cd aml-sdk-demo
+
+# Install dependencies (creates .venv automatically, no CUDA downloads)
+uv sync
+
+# Add environment to Jupyter kernelspec to use in Notebook
+uv run python -m ipykernel install --user --name .venv
 ```
 
 ### Step 2: Configure Azure Authentication
@@ -243,7 +258,7 @@ az role assignment list \
 
 Open the Jupyter Notebook: notebooks/01_setup_workspace.ipynb
 
-In Jupyter Notebook, select Kernel to be the poetry virtual environment that should have been created following Step 1.
+In Jupyter Notebook, select Kernel to be the `.venv` virtual environment that should have been created following Step 1.
 
 The notebook will:
 - ✅ Test Azure connectivity
@@ -279,17 +294,17 @@ The notebook will:
 ### Daily Development Workflow
 
 ```bash
-# Start development session
-poetry shell
-
 # For Azure ML training jobs
-python src/azure_ml_training/train_lstm.py
+uv run python src/azure_ml_training/train_lstm.py
 
 # For local training experiments
-python src/training/train_lstm.py
+uv run python src/training/train_lstm.py
 
 # For pipeline execution
-python mlops/pipelines/training_pipeline.py
+uv run python mlops/pipelines/training_pipeline.py
+
+# Run tests
+uv run pytest tests/ -v
 ```
 
 ## 🚨 Common Issues and Solutions
@@ -336,10 +351,10 @@ python mlops/pipelines/training_pipeline.py
 - **Environment Strategy**: Start with curated environments, customize as needed
 - **Error Handling**: Implement comprehensive error detection and recovery
 
-### Poetry + PyTorch Best Practices
+### uv + PyTorch Best Practices
 - **CPU-First Development**: Use CPU versions for development, GPU for production
 - **Clean Dependencies**: Remove unused CUDA packages to avoid bloat
-- **Performance Tuning**: Use Poetry optimization settings for faster resolution
+- **Cross-Platform Lock**: `uv.lock` resolves for all platforms by default
 
 ### MLflow Integration
 - **Centralized Tracking**: Use Azure ML's built-in MLflow tracking
@@ -351,7 +366,7 @@ python mlops/pipelines/training_pipeline.py
 - [Azure ML v2 SDK Documentation](https://docs.microsoft.com/en-us/azure/machine-learning/)
 - [PyTorch Time Series Tutorial](https://pytorch.org/tutorials/beginner/transformer_tutorial.html)
 - [MLflow Tracking Guide](https://mlflow.org/docs/latest/tracking.html)
-- [Poetry Dependency Management](https://python-poetry.org/docs/)
+- [uv Dependency Management](https://docs.astral.sh/uv/)
 
 ## 📞 Getting Help
 
