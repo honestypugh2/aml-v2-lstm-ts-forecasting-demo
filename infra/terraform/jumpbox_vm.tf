@@ -51,6 +51,28 @@ resource "azurerm_windows_virtual_machine" "jumpbox" {
   tags = var.tags
 }
 
+# --------------------------------------------------
+# Entra ID (AAD) Join – makes the VM a compliant device
+# so Conditional Access policies allow browser access
+# to Azure ML Studio and other Entra-protected apps.
+# --------------------------------------------------
+resource "azurerm_virtual_machine_extension" "aad_login" {
+  name                       = "AADLoginForWindows"
+  virtual_machine_id         = azurerm_windows_virtual_machine.jumpbox.id
+  publisher                  = "Microsoft.Azure.ActiveDirectory"
+  type                       = "AADLoginForWindows"
+  type_handler_version       = "2.0"
+  auto_upgrade_minor_version = true
+  tags                       = var.tags
+}
+
+# Allow your Entra ID user to RDP into the Entra-joined VM
+resource "azurerm_role_assignment" "jumpbox_vm_admin_login" {
+  scope                = azurerm_windows_virtual_machine.jumpbox.id
+  role_definition_name = "Virtual Machine Administrator Login"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
 # Grant the jumpbox managed identity Contributor on the resource group
 resource "azurerm_role_assignment" "jumpbox_contributor" {
   scope                = azurerm_resource_group.rg.id

@@ -75,12 +75,14 @@ resource "azurerm_storage_account" "sa" {
 # Azure Container Registry
 # --------------------------------------------------
 resource "azurerm_container_registry" "acr" {
-  name                = var.acr_name
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = var.location
-  sku                 = "Premium"
-  admin_enabled       = false
-  tags                = var.tags
+  name                          = var.acr_name
+  resource_group_name           = azurerm_resource_group.rg.name
+  location                      = var.location
+  sku                           = "Premium"
+  admin_enabled                 = false
+  public_network_access_enabled = false
+
+  tags = var.tags
 }
 
 # --------------------------------------------------
@@ -135,6 +137,46 @@ resource "azurerm_machine_learning_workspace" "aml" {
       repo     = "aml-v2-lstm-ts-forecasting-demo"
     }
   )
+}
+
+# --------------------------------------------------
+# Workspace identity RBAC on backing services
+# (required per MS docs for managed VNet isolation)
+# --------------------------------------------------
+
+# Storage: workspace needs blob + file data access
+resource "azurerm_role_assignment" "aml_sa_blob" {
+  scope                = azurerm_storage_account.sa.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_machine_learning_workspace.aml.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "aml_sa_file" {
+  scope                = azurerm_storage_account.sa.id
+  role_definition_name = "Storage File Data Privileged Contributor"
+  principal_id         = azurerm_machine_learning_workspace.aml.identity[0].principal_id
+}
+
+# ACR: workspace needs push/pull for training environment images
+resource "azurerm_role_assignment" "aml_acr_push" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPush"
+  principal_id         = azurerm_machine_learning_workspace.aml.identity[0].principal_id
+}
+
+# Key Vault: workspace needs secrets/keys access
+resource "azurerm_role_assignment" "aml_kv_admin" {
+  scope                = azurerm_key_vault.kv.id
+  role_definition_name = "Key Vault Administrator"
+  principal_id         = azurerm_machine_learning_workspace.aml.identity[0].principal_id
+}
+
+# Deployer: privateEndpointConnections read/write on workspace
+# (required for managed VNet provisioning)
+resource "azurerm_role_assignment" "deployer_aml_contributor" {
+  scope                = azurerm_machine_learning_workspace.aml.id
+  role_definition_name = "Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
 }
 
 # --------------------------------------------------
@@ -211,6 +253,160 @@ resource "azurerm_private_endpoint" "aml_pe" {
       azurerm_private_dns_zone.aml_api.id,
       azurerm_private_dns_zone.aml_notebooks.id,
     ]
+  }
+
+  tags = var.tags
+}
+
+# --------------------------------------------------
+# Private DNS Zones for backing services
+# --------------------------------------------------
+resource "azurerm_private_dns_zone" "blob" {
+  name                = "privatelink.blob.core.windows.net"
+  resource_group_name = azurerm_resource_group.rg.name
+  tags                = var.tags
+}
+
+resource "azurerm_private_dns_zone" "file" {
+  name                = "privatelink.file.core.windows.net"
+  resource_group_name = azurerm_resource_group.rg.name
+  tags                = var.tags
+}
+
+resource "azurerm_private_dns_zone" "vault" {
+  name                = "privatelink.vaultcore.azure.net"
+  resource_group_name = azurerm_resource_group.rg.name
+  tags                = var.tags
+}
+
+resource "azurerm_private_dns_zone" "acr" {
+  name                = "privatelink.azurecr.io"
+  resource_group_name = azurerm_resource_group.rg.name
+  tags                = var.tags
+}
+
+# --------------------------------------------------
+# VNet links for backing-service DNS zones
+# --------------------------------------------------
+resource "azurerm_private_dns_zone_virtual_network_link" "blob_link" {
+  name                  = "blob-dns-link"
+  resource_group_name   = azurerm_resource_group.rg.name
+  private_dns_zone_name = azurerm_private_dns_zone.blob.name
+  virtual_network_id    = azurerm_virtual_network.vnet.id
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "file_link" {
+  name                  = "file-dns-link"
+  resource_group_name   = azurerm_resource_group.rg.name
+  private_dns_zone_name = azurerm_private_dns_zone.file.name
+  virtual_network_id    = azurerm_virtual_network.vnet.id
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "vault_link" {
+  name                  = "vault-dns-link"
+  resource_group_name   = azurerm_resource_group.rg.name
+  private_dns_zone_name = azurerm_private_dns_zone.vault.name
+  virtual_network_id    = azurerm_virtual_network.vnet.id
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "acr_link" {
+  name                  = "acr-dns-link"
+  resource_group_name   = azurerm_resource_group.rg.name
+  private_dns_zone_name = azurerm_private_dns_zone.acr.name
+  virtual_network_id    = azurerm_virtual_network.vnet.id
+}
+
+# --------------------------------------------------
+# Storage Account Private Endpoint
+# --------------------------------------------------
+resource "azurerm_private_endpoint" "sa_blob_pe" {
+  name                = "${var.storage_account_name}-blob-pe"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.rg.name
+  subnet_id           = azurerm_subnet.snet_jumpbox.id
+
+  private_service_connection {
+    name                           = "${var.storage_account_name}-blob-psc"
+    private_connection_resource_id = azurerm_storage_account.sa.id
+    subresource_names              = ["blob"]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "blob-dns-group"
+    private_dns_zone_ids = [azurerm_private_dns_zone.blob.id]
+  }
+
+  tags = var.tags
+}
+
+# --------------------------------------------------
+# Storage Account File Share Private Endpoint
+# --------------------------------------------------
+resource "azurerm_private_endpoint" "sa_file_pe" {
+  name                = "${var.storage_account_name}-file-pe"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.rg.name
+  subnet_id           = azurerm_subnet.snet_jumpbox.id
+
+  private_service_connection {
+    name                           = "${var.storage_account_name}-file-psc"
+    private_connection_resource_id = azurerm_storage_account.sa.id
+    subresource_names              = ["file"]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "file-dns-group"
+    private_dns_zone_ids = [azurerm_private_dns_zone.file.id]
+  }
+
+  tags = var.tags
+}
+
+# --------------------------------------------------
+# Key Vault Private Endpoint
+# --------------------------------------------------
+resource "azurerm_private_endpoint" "kv_pe" {
+  name                = "${var.key_vault_name}-pe"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.rg.name
+  subnet_id           = azurerm_subnet.snet_jumpbox.id
+
+  private_service_connection {
+    name                           = "${var.key_vault_name}-psc"
+    private_connection_resource_id = azurerm_key_vault.kv.id
+    subresource_names              = ["vault"]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "vault-dns-group"
+    private_dns_zone_ids = [azurerm_private_dns_zone.vault.id]
+  }
+
+  tags = var.tags
+}
+
+# --------------------------------------------------
+# Container Registry Private Endpoint
+# --------------------------------------------------
+resource "azurerm_private_endpoint" "acr_pe" {
+  name                = "${var.acr_name}-pe"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.rg.name
+  subnet_id           = azurerm_subnet.snet_jumpbox.id
+
+  private_service_connection {
+    name                           = "${var.acr_name}-psc"
+    private_connection_resource_id = azurerm_container_registry.acr.id
+    subresource_names              = ["registry"]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "acr-dns-group"
+    private_dns_zone_ids = [azurerm_private_dns_zone.acr.id]
   }
 
   tags = var.tags

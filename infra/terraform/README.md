@@ -8,23 +8,37 @@ and the [Managed VNet isolation guide](https://learn.microsoft.com/en-us/azure/m
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Azure Resource Group                                                │
-│                                                                      │
-│  ┌────────────────────────────────────┐  ┌────────────────────────┐  │
-│  │  AML Workspace (Managed VNet)      │  │  Jumpbox VNet          │  │
-│  │  isolation = AllowInternetOutbound │◄─┤  ├─ AzureBastionSubnet │  │
-│  │                                    │PE│  ├─ snet-jumpbox        │  │
-│  │  ┌─────────┐  ┌───────┐  ┌─────┐  │  │  │   ├─ Jumpbox VM     │  │
-│  │  │ Storage  │  │  ACR  │  │ KV  │  │  │  │   └─ Workspace PE   │  │
-│  │  │ (Deny)   │  │(Prem) │  │(Deny)│  │  │  └─ Bastion Host     │  │
-│  │  └─────────┘  └───────┘  └─────┘  │  └────────────────────────┘  │
-│  │  ┌──────────┐  ┌──────────────┐   │                               │
-│  │  │cpu-cluster│  │ App Insights │   │                               │
-│  │  └──────────┘  └──────────────┘   │                               │
-│  └────────────────────────────────────┘                               │
-└──────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Azure Resource Group                                                       │
+│                                                                             │
+│  ┌──────────────────────────────────┐  ┌──────────────────────────────────┐ │
+│  │  AML Workspace                   │  │  Jumpbox VNet (10.30.0.0/16)    │ │
+│  │  managed_network:                │  │                                  │ │
+│  │    AllowInternetOutbound         │  │  AzureBastionSubnet (10.30.2.0) │ │
+│  │                                  │  │    └─ Bastion Host              │ │
+│  │  Managed VNet (hidden, auto)     │  │                                  │ │
+│  │  ┌────────────────────────────┐  │  │  snet-jumpbox (10.30.1.0)       │ │
+│  │  │ Auto PEs to Storage/KV/ACR│  │  │    ├─ Jumpbox VM (Entra-joined) │ │
+│  │  │ (for compute traffic)     │  │  │    ├─ Workspace PE ──────────┐  │ │
+│  │  └────────────────────────────┘  │◄─┤    ├─ Storage blob PE       │  │ │
+│  │                                  │PE│    ├─ Storage file PE       │  │ │
+│  │  cpu-cluster (triggers managed   │  │    ├─ Key Vault PE          │  │ │
+│  │  VNet provisioning)              │  │    └─ ACR PE                │  │ │
+│  └──────────────────────────────────┘  └──────────────────────────────────┘ │
+│                                                                             │
+│  ┌───────────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐  │
+│  │ Storage Account   │ │ Key Vault    │ │ ACR (Premium)│ │ App Insights │  │
+│  │ default_action:   │ │ default:Deny │ │ public:false │ │ + Log Analyt │  │
+│  │ Deny              │ │              │ │              │ │              │  │
+│  └───────────────────┘ └──────────────┘ └──────────────┘ └──────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Two sets of private endpoints exist:**
+1. **Managed VNet PEs** (auto-created by AML): for compute traffic to
+   Storage/KV/ACR inside the hidden managed network.
+2. **Jumpbox VNet PEs** (Terraform-managed): for jumpbox/Studio browser
+   access to the workspace and its backing services.
 
 ## Resources created
 
@@ -33,16 +47,39 @@ and the [Managed VNet isolation guide](https://learn.microsoft.com/en-us/azure/m
 | Resource Group | Container for all resources |
 | Log Analytics Workspace | Backend for Application Insights |
 | Application Insights | AML workspace telemetry |
-| Storage Account (default_action=Deny) | AML default datastore, firewall-restricted |
-| Azure Container Registry (Premium) | Docker images for training environments — Premium SKU for private endpoint support |
-| Key Vault (default_action=Deny) | Secrets/keys for AML, firewall-restricted |
-| AML Workspace (managed_network) | Workspace with managed VNet isolation (`AllowInternetOutbound` or `AllowOnlyApprovedOutbound`) |
-| AML Compute Cluster | `cpu-cluster` — also triggers managed VNet provisioning |
+| Storage Account (`default_action=Deny`) | AML default datastore, firewall-restricted |
+| Azure Container Registry (Premium, `public_network_access=false`) | Docker images for training environments |
+| Key Vault (`default_action=Deny`) | Secrets/keys for AML, firewall-restricted |
+| AML Workspace (`managed_network`) | Workspace with managed VNet isolation (`AllowInternetOutbound`) |
+| AML Compute Cluster | `cpu-cluster` — triggers managed VNet provisioning |
+| **Workspace identity RBAC** | `Storage Blob Data Contributor`, `Storage File Data Privileged Contributor`, `AcrPush`, `Key Vault Administrator` on backing services |
+| **Deployer RBAC** | `Contributor` on workspace (includes `privateEndpointConnections/read` + `write` for managed VNet provisioning) |
 | Jumpbox VNet + subnets | User-managed VNet for Bastion + workspace inbound access |
-| Azure Bastion Host | Secure browser-based access to the jumpbox VM |
-| Jumpbox Windows VM | Windows desktop for Azure ML Studio web UI, development, and CLI/SDK access |
+| Azure Bastion Host (Standard) | Secure browser-based RDP access to the jumpbox |
+| Jumpbox Windows VM + Entra ID join | Windows desktop with `AADLoginForWindows` extension for Conditional Access compliance |
+| `Virtual Machine Administrator Login` | Entra RBAC for jumpbox RDP |
 | Workspace Private Endpoint | Inbound access to the workspace from the jumpbox VNet |
-| Private DNS Zones | `privatelink.api.azureml.ms` + `privatelink.notebooks.azure.net` for name resolution |
+| Storage blob + file Private Endpoints | Jumpbox/Studio access to blob and file share data |
+| Key Vault Private Endpoint | Jumpbox/Studio access to Key Vault |
+| ACR Private Endpoint | Jumpbox/Studio access to Container Registry |
+| Private DNS Zones | `privatelink.api.azureml.ms`, `privatelink.notebooks.azure.net`, `privatelink.blob.core.windows.net`, `privatelink.file.core.windows.net`, `privatelink.vaultcore.azure.net`, `privatelink.azurecr.io` |
+
+## Required RBAC permissions
+
+The Azure identity used to deploy this infrastructure needs the following
+permissions. The `Contributor` role on the resource group satisfies all of
+these:
+
+| Action | Why |
+|---|---|
+| `Microsoft.MachineLearningServices/workspaces/privateEndpointConnections/read` | Read managed VNet private endpoint connections |
+| `Microsoft.MachineLearningServices/workspaces/privateEndpointConnections/write` | Create/approve managed VNet private endpoint connections |
+| Standard `Contributor` actions | Create all resources (VMs, PEs, DNS, etc.) |
+| `Microsoft.Authorization/roleAssignments/write` | Assign RBAC roles (requires `Owner` or `User Access Administrator`) |
+
+> **Note:** If your identity only has `Contributor`, you will also need
+> `User Access Administrator` on the resource group to create the role
+> assignments for the workspace identity and jumpbox.
 
 ## How Managed VNet isolation works
 
@@ -65,8 +102,8 @@ details, see [Manually provision a managed VNet](https://learn.microsoft.com/en-
 * Azure CLI authenticated: `az login`
 * Subscription selected: `az account set --subscription <SUB_ID>`
 * Providers: `azurerm ~> 4.0`, `azapi ~> 2.0`
-* An SSH public key at `~/.ssh/id_rsa.pub` (for the jumpbox VM)
 * A strong admin password (12+ chars, mixed case, digit, special) for the Windows jumpbox
+* `Owner` or `Contributor` + `User Access Administrator` on the target resource group/subscription
 
 ## Deploy
 
@@ -89,6 +126,10 @@ Because `public_network_access = Disabled`, the workspace can only be reached
 through the **private endpoint** on the jumpbox VNet. The jumpbox is a
 **Windows Server 2022** VM with a desktop GUI (Desktop Experience), so you can
 use a browser, VS Code, and CLI tools directly on the VM.
+
+The jumpbox is **Entra ID-joined** via the `AADLoginForWindows` VM extension.
+This is required for corporate Conditional Access policies that restrict
+browser access (e.g., Azure ML Studio) to compliant/managed devices.
 
 | Approach | Use case |
 |---|---|
@@ -136,6 +177,31 @@ The simplest approach — no local tooling beyond Azure Portal.
    * **Username:** `azureuser`
    * **Password:** *(the `admin_password` from your `terraform.tfvars`)*
 5. Click **Connect**. A browser-based RDP session opens.
+
+#### Accessing Azure ML Studio (Conditional Access)
+
+The jumpbox is Entra ID-joined at the device level. To get a Primary Refresh
+Token (PRT) so Conditional Access passes in the browser:
+
+1. On the jumpbox open **Settings** → **Accounts** → **Access work or school**.
+2. If your Entra account is not listed, click **Connect** and sign in with
+   your `@microsoft.com` (or corporate) account.
+3. Open **Microsoft Edge** → sign in to Edge with the same corporate account.
+4. Enable **"Allow my organization to manage my device"** if prompted.
+5. Navigate to `https://ml.azure.com`.
+
+#### Verify DNS resolution
+
+From PowerShell on the jumpbox, confirm private DNS is working:
+
+```powershell
+nslookup <workspace-name>.api.azureml.ms
+nslookup <storage-account>.blob.core.windows.net
+nslookup <storage-account>.file.core.windows.net
+nslookup <keyvault-name>.vault.azure.net
+nslookup <acr-name>.azurecr.io
+# All should resolve to 10.30.1.x private IPs
+```
 
 ---
 
@@ -190,7 +256,7 @@ az network bastion tunnel \
 #### Connect via PowerShell Remoting over RDP
 
 You can use an RDP client to launch just PowerShell, or use `az network bastion
-rdp` for a quick session:
+rdp` (Windows only) for a quick session:
 
 ```bash
 az network bastion rdp \
@@ -198,6 +264,9 @@ az network bastion rdp \
   --resource-group <RESOURCE_GROUP> \
   --target-resource-id <JUMPBOX_VM_RESOURCE_ID>
 ```
+
+> **Note:** `az network bastion rdp` requires a Windows client with WinDLL.
+> On Linux/macOS, use the tunnel approach above instead.
 
 ---
 
