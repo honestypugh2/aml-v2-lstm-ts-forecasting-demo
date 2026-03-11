@@ -41,6 +41,7 @@ resource "azurerm_storage_account" "sa" {
   account_replication_type = "LRS"
 
   min_tls_version                 = "TLS1_2"
+  shared_access_key_enabled       = false
   allow_nested_items_to_be_public = false
 
   tags = var.tags
@@ -100,6 +101,78 @@ resource "azurerm_machine_learning_workspace" "aml" {
       repo     = "aml-v2-lstm-ts-forecasting-demo"
     }
   )
+}
+
+# --------------------------------------------------
+# RBAC: Storage Blob Data Contributor for current user
+# --------------------------------------------------
+resource "azurerm_role_assignment" "user_blob_contributor" {
+  scope                = azurerm_storage_account.sa.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+# --------------------------------------------------
+# RBAC: Storage File Data Privileged Contributor for current user
+# --------------------------------------------------
+resource "azurerm_role_assignment" "user_file_contributor" {
+  scope                = azurerm_storage_account.sa.id
+  role_definition_name = "Storage File Data Privileged Contributor"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+# --------------------------------------------------
+# RBAC: Storage Blob Data Contributor for compute cluster
+# --------------------------------------------------
+resource "azurerm_role_assignment" "cluster_blob_contributor" {
+  scope                = azurerm_storage_account.sa.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_machine_learning_compute_cluster.cc.identity[0].principal_id
+}
+
+# --------------------------------------------------
+# RBAC: Storage File Data Privileged Contributor for compute cluster
+# --------------------------------------------------
+resource "azurerm_role_assignment" "cluster_file_contributor" {
+  scope                = azurerm_storage_account.sa.id
+  role_definition_name = "Storage File Data Privileged Contributor"
+  principal_id         = azurerm_machine_learning_compute_cluster.cc.identity[0].principal_id
+}
+
+# --------------------------------------------------
+# Switch default datastore to identity-based auth
+# --------------------------------------------------
+resource "null_resource" "datastore_identity_auth" {
+  depends_on = [
+    azurerm_machine_learning_workspace.aml,
+    azurerm_role_assignment.user_blob_contributor,
+    azurerm_role_assignment.user_file_contributor,
+  ]
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      CONTAINER=$(az ml datastore show \
+        --name workspaceblobstore \
+        --resource-group ${azurerm_resource_group.rg.name} \
+        --workspace-name ${azurerm_machine_learning_workspace.aml.name} \
+        --query container_name -o tsv)
+
+      TMPFILE=$(mktemp /tmp/datastore-XXXXXX.yaml)
+      cat > "$TMPFILE" <<YAML
+      \$schema: https://azuremlschemas.azureedge.net/latest/azureBlob.schema.json
+      name: workspaceblobstore
+      account_name: ${azurerm_storage_account.sa.name}
+      container_name: $CONTAINER
+      YAML
+
+      az ml datastore create \
+        --file "$TMPFILE" \
+        --resource-group ${azurerm_resource_group.rg.name} \
+        --workspace-name ${azurerm_machine_learning_workspace.aml.name}
+
+      rm -f "$TMPFILE"
+    EOT
+  }
 }
 
 # --------------------------------------------------
