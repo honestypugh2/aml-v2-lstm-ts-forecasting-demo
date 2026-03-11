@@ -28,6 +28,38 @@ resource "azurerm_subnet" "snet_jumpbox" {
 }
 
 # --------------------------------------------------
+# NAT Gateway – provides outbound internet for the
+# jumpbox (Edge, az login, Windows Update, etc.)
+# --------------------------------------------------
+resource "azurerm_public_ip" "nat_pip" {
+  name                = "${var.aml_workspace_name}-nat-pip"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.rg.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  tags                = var.tags
+}
+
+resource "azurerm_nat_gateway" "jumpbox_nat" {
+  name                    = "${var.aml_workspace_name}-nat-gw"
+  location                = var.location
+  resource_group_name     = azurerm_resource_group.rg.name
+  sku_name                = "Standard"
+  idle_timeout_in_minutes = 10
+  tags                    = var.tags
+}
+
+resource "azurerm_nat_gateway_public_ip_association" "nat_pip_assoc" {
+  nat_gateway_id       = azurerm_nat_gateway.jumpbox_nat.id
+  public_ip_address_id = azurerm_public_ip.nat_pip.id
+}
+
+resource "azurerm_subnet_nat_gateway_association" "jumpbox_nat_assoc" {
+  subnet_id      = azurerm_subnet.snet_jumpbox.id
+  nat_gateway_id = azurerm_nat_gateway.jumpbox_nat.id
+}
+
+# --------------------------------------------------
 # Log Analytics + App Insights
 # --------------------------------------------------
 resource "azurerm_log_analytics_workspace" "law" {

@@ -22,7 +22,7 @@ resource "azurerm_windows_virtual_machine" "jumpbox" {
   computer_name       = "aml-jumpbox"
   location            = var.location
   resource_group_name = azurerm_resource_group.rg.name
-  size                = "Standard_D2s_v3"
+  size                = "Standard_D4s_v3"
 
   admin_username = "azureuser"
   admin_password = var.admin_password
@@ -33,7 +33,7 @@ resource "azurerm_windows_virtual_machine" "jumpbox" {
 
   os_disk {
     caching              = "ReadWrite"
-    storage_account_type = "Standard_LRS"
+    storage_account_type = "Premium_LRS"
   }
 
   identity {
