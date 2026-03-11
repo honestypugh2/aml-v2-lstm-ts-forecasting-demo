@@ -213,8 +213,8 @@ uv run python -m ipykernel install --user --name .venv
 ### Step 2: Configure Azure Authentication
 
 ```bash
-# Login to Azure
-az login
+# Login to Azure using the jumpbox managed identity (no browser required)
+az login --identity
 
 # Set your subscription
 az account set --subscription "your-subscription-id"
@@ -224,6 +224,12 @@ az ml workspace show \
     --name "your-workspace-name" \
     --resource-group "your-resource-group"
 ```
+
+> **Note:** The jumpbox VM has a user-assigned managed identity with
+> `Contributor` (resource group) and `AzureML Data Scientist` (workspace)
+> roles. Using `az login --identity` avoids corporate Conditional Access
+> issues that block browser-based auth flows (`az login`,
+> `az login --use-device-code`) on non-Intune-compliant devices.
 
 ### Step 3: Set Storage Permissions (Critical - If not already done during Resource Creation)
 

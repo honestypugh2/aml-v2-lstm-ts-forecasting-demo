@@ -19,17 +19,18 @@ and the [Managed VNet isolation guide](https://learn.microsoft.com/en-us/azure/m
 │  │  Managed VNet (hidden, auto)     │  │                                  │ │
 │  │  ┌────────────────────────────┐  │  │  snet-jumpbox (10.30.1.0)       │ │
 │  │  │ Auto PEs to Storage/KV/ACR│  │  │    ├─ Jumpbox VM (Entra-joined) │ │
-│  │  │ (for compute traffic)     │  │  │    ├─ Workspace PE ──────────┐  │ │
-│  │  └────────────────────────────┘  │◄─┤    ├─ Storage blob PE       │  │ │
-│  │                                  │PE│    ├─ Storage file PE       │  │ │
-│  │  cpu-cluster (triggers managed   │  │    ├─ Key Vault PE          │  │ │
-│  │  VNet provisioning)              │  │    └─ ACR PE                │  │ │
+│  │  │ (for compute traffic)     │  │  │    ├─ NAT Gateway ──► Internet  │ │
+│  │  └────────────────────────────┘  │  │    ├─ Workspace PE ──────────┐  │ │
+│  │                                  │◄─┤    ├─ Storage blob PE       │  │ │
+│  │  cpu-cluster (triggers managed   │PE│    ├─ Storage file PE       │  │ │
+│  │  VNet provisioning)              │  │    ├─ Key Vault PE          │  │ │
+│  │                                  │  │    └─ ACR PE                │  │ │
 │  └──────────────────────────────────┘  └──────────────────────────────────┘ │
 │                                                                             │
 │  ┌───────────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐  │
 │  │ Storage Account   │ │ Key Vault    │ │ ACR (Premium)│ │ App Insights │  │
 │  │ default_action:   │ │ default:Deny │ │ public:false │ │ + Log Analyt │  │
-│  │ Deny              │ │              │ │              │ │              │  │
+│  │ Deny              │ │              │ │              │  │              │  │
 │  └───────────────────┘ └──────────────┘ └──────────────┘ └──────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -55,8 +56,10 @@ and the [Managed VNet isolation guide](https://learn.microsoft.com/en-us/azure/m
 | **Workspace identity RBAC** | `Storage Blob Data Contributor`, `Storage File Data Privileged Contributor`, `AcrPush`, `Key Vault Administrator` on backing services |
 | **Deployer RBAC** | `Contributor` on workspace (includes `privateEndpointConnections/read` + `write` for managed VNet provisioning) |
 | Jumpbox VNet + subnets | User-managed VNet for Bastion + workspace inbound access |
+| **NAT Gateway + Public IP** | Provides outbound internet for the jumpbox subnet (required since Azure removed default outbound access for VMs created after Sept 2025) |
 | Azure Bastion Host (Standard) | Secure browser-based RDP access to the jumpbox |
-| Jumpbox Windows VM + Entra ID join | Windows desktop with `AADLoginForWindows` extension for Conditional Access compliance |
+| Jumpbox Windows VM (`Standard_D4s_v3`, Premium SSD) + Entra ID join | Windows desktop with `AADLoginForWindows` extension, user-assigned managed identity |
+| Jumpbox User-Assigned Managed Identity | Pre-configured identity with `Contributor` (resource group) and `AzureML Data Scientist` (workspace) roles — enables `az login --identity` |
 | `Virtual Machine Administrator Login` | Entra RBAC for jumpbox RDP |
 | Workspace Private Endpoint | Inbound access to the workspace from the jumpbox VNet |
 | Storage blob + file Private Endpoints | Jumpbox/Studio access to blob and file share data |
@@ -371,10 +374,17 @@ uv sync
 uv run python -c "import torch; print(f'PyTorch {torch.__version__}')"
 ```
 
-### 7. Authenticate with Azure
+### 7. Authenticate with Azure (Managed Identity)
+
+The jumpbox has a **user-assigned managed identity** pre-configured with
+`Contributor` on the resource group and `AzureML Data Scientist` on the
+workspace. Use it to authenticate without a browser — this avoids corporate
+Conditional Access / Intune compliance issues that block `az login` and
+`az login --use-device-code` on non-compliant devices.
 
 ```powershell
-az login
+# Authenticate using the jumpbox managed identity (no browser required)
+az login --identity
 
 # Set your subscription
 az account set --subscription "<SUB_ID>"
@@ -383,27 +393,96 @@ az account set --subscription "<SUB_ID>"
 az ml workspace show --name <aml_workspace_name> --resource-group <resource_group_name>
 ```
 
+> **Why not `az login` or `az login --use-device-code`?**
+>
+> Corporate tenants (e.g., Microsoft FDPO) enforce Conditional Access policies
+> that require Intune-compliant devices. The jumpbox VM is Entra-joined but
+> **not** Intune-enrolled, so browser-based and device-code auth flows are
+> blocked with "Device must comply with your organization's compliance
+> requirements" or "You don't have access to this". The managed identity
+> flow bypasses Conditional Access entirely.
+
+#### What the managed identity can do
+
+| Role | Scope | Capabilities |
+|---|---|---|
+| `Contributor` | Resource group | Create/manage all Azure resources in the RG |
+| `AzureML Data Scientist` | AML workspace | Submit jobs, manage experiments, read/write data, create endpoints |
+
+#### Using managed identity in Python
+
+```python
+from azure.identity import ManagedIdentityCredential
+from azure.ai.ml import MLClient
+
+credential = ManagedIdentityCredential()
+ml_client = MLClient(
+    credential,
+    subscription_id="<SUB_ID>",
+    resource_group_name="<RG>",
+    workspace_name="<WORKSPACE>",
+)
+
+# List compute targets
+for c in ml_client.compute.list():
+    print(c.name, c.type)
+```
+
+> **Note:** `ManagedIdentityCredential` is preferred over
+> `DefaultAzureCredential` on the jumpbox because `DefaultAzureCredential`
+> may attempt browser-based flows first, which will fail.
+
 ---
 
 ## Using Azure ML Studio
 
-Once set up, open **Microsoft Edge** (pre-installed on Windows Server 2022)
-and navigate to:
+> **Corporate tenant limitation:** If your Entra ID tenant enforces
+> Conditional Access with device compliance (e.g., Microsoft FDPO), the
+> browser-based Azure ML Studio UI will be **blocked** on the jumpbox because
+> the VM is not Intune-enrolled. Use the **Azure ML CLI v2** or **Python SDK**
+> as alternatives (see below).
+
+If your tenant does **not** enforce device compliance, you can open
+**Microsoft Edge** and navigate to:
 
 ```
 https://ml.azure.com
 ```
 
-Sign in with your Microsoft Entra ID credentials. MFA works normally in Edge.
-Select your workspace or navigate directly:
-
-```
-https://ml.azure.com/home?tid=<TENANT_ID>&wsid=<WORKSPACE_RESOURCE_ID>
-```
-
 DNS resolution for `*.api.azureml.ms` and `*.notebooks.azure.net` resolves to
 private IPs automatically because the private DNS zones are linked to the
 jumpbox VNet.
+
+### Azure ML CLI v2 (Studio replacement)
+
+After authenticating with `az login --identity`, the CLI provides full
+workspace access:
+
+```powershell
+# List compute targets
+az ml compute list --workspace-name <WORKSPACE> --resource-group <RG> -o table
+
+# Submit a training job
+az ml job create --file job.yml --workspace-name <WORKSPACE> --resource-group <RG>
+
+# List recent jobs
+az ml job list --workspace-name <WORKSPACE> --resource-group <RG> -o table
+
+# Stream job logs
+az ml job stream --name <JOB_NAME> --workspace-name <WORKSPACE> --resource-group <RG>
+
+# List registered models
+az ml model list --workspace-name <WORKSPACE> --resource-group <RG> -o table
+
+# List datasets / data assets
+az ml data list --workspace-name <WORKSPACE> --resource-group <RG> -o table
+
+# List environments
+az ml environment list --workspace-name <WORKSPACE> --resource-group <RG> -o table
+
+# List endpoints
+az ml online-endpoint list --workspace-name <WORKSPACE> --resource-group <RG> -o table
+```
 
 ## Using VS Code on the jumpbox
 
@@ -422,6 +501,10 @@ run `code .` in the project directory. You can:
 ```powershell
 cd $env:USERPROFILE\aml-v2-lstm-ts-forecasting-demo
 
+# Authenticate first (managed identity — no browser needed)
+az login --identity
+az account set --subscription "<SUB_ID>"
+
 # Run training jobs
 uv run python src/azure_ml_training/submit_training_job.py `
   --compute-name cpu-cluster `
@@ -433,13 +516,13 @@ uv run python src/training/train_lstm.py
 # Run tests
 uv run pytest tests/ -v
 
-# Use the Azure ML SDK
+# Use the Azure ML SDK (with managed identity)
 uv run python -c @"
 from azure.ai.ml import MLClient
-from azure.identity import DefaultAzureCredential
+from azure.identity import ManagedIdentityCredential
 
 ml_client = MLClient(
-    DefaultAzureCredential(),
+    ManagedIdentityCredential(),
     subscription_id='<SUB_ID>',
     resource_group_name='<RG>',
     workspace_name='<WORKSPACE>',
