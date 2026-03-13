@@ -2,7 +2,7 @@
 Unit tests for the TimeSeriesPreprocessor class.
 
 This module contains comprehensive tests for data preprocessing functionality
-including scaling, sequence creation, and feature engineering.
+including scaling, sequence creation, and data splitting.
 """
 
 import os
@@ -32,8 +32,6 @@ class TestTimeSeriesPreprocessor:  # type: ignore
         data = pd.DataFrame({
             'date': dates,
             'value': np.random.randn(len(dates)) * 10 + 100,
-            'feature_1': np.random.randn(len(dates)) * 5 + 50,
-            'feature_2': np.random.exponential(2, len(dates))
         })
         return data
 
@@ -42,241 +40,176 @@ class TestTimeSeriesPreprocessor:  # type: ignore
         """Create a preprocessor instance."""
         return TimeSeriesPreprocessor(
             target_column='value',
-            date_column='date',
             sequence_length=10,
-            forecast_horizon=1
         )
 
     def test_initialization(self):
         """Test preprocessor initialization."""
         preprocessor = TimeSeriesPreprocessor(
             target_column='target',
-            date_column='timestamp',
             sequence_length=20,
-            forecast_horizon=5
         )
 
         assert preprocessor.target_column == 'target'
-        assert preprocessor.date_column == 'timestamp'
         assert preprocessor.sequence_length == 20
-        assert preprocessor.forecast_horizon == 5
         assert preprocessor.is_fitted is False
 
-    def test_fit_method(self, preprocessor, sample_data):
-        """Test the fit method."""
-        preprocessor.fit(sample_data)
+    def test_fit_transform(self, preprocessor, sample_data):
+        """Test fit_transform method."""
+        scaled_data = preprocessor.fit_transform(sample_data)
 
         assert preprocessor.is_fitted is True
-        assert preprocessor.target_scaler is not None
-        assert preprocessor.feature_scaler is not None
+        assert preprocessor.scaler is not None
+        assert isinstance(scaled_data, np.ndarray)
+        assert len(scaled_data) == len(sample_data)
+        # MinMaxScaler should scale to [0, 1]
+        assert scaled_data.min() >= 0.0 - 1e-9
+        assert scaled_data.max() <= 1.0 + 1e-9
 
-        # Check that feature columns are identified correctly
-        expected_features = ['feature_1', 'feature_2']
-        assert set(preprocessor.feature_columns) == set(expected_features)
-
-    def test_fit_with_missing_columns(self, preprocessor):
-        """Test fit method with missing required columns."""
+    def test_fit_transform_with_missing_column(self, preprocessor):
+        """Test fit_transform with missing target column."""
         invalid_data = pd.DataFrame({
-            'wrong_date': pd.date_range('2020-01-01', periods=10),
-            'wrong_value': np.random.randn(10)
+            'wrong_column': np.random.randn(10)
         })
 
-        with pytest.raises((KeyError, ValueError)):
-            preprocessor.fit(invalid_data)
+        with pytest.raises(ValueError, match="not found"):
+            preprocessor.fit_transform(invalid_data)
 
     def test_transform_before_fit(self, preprocessor, sample_data):
         """Test that transform raises error before fitting."""
-        with pytest.raises(ValueError, match="must be fitted"):
+        with pytest.raises(ValueError, match="not fitted"):
             preprocessor.transform(sample_data)
-
-    def test_create_sequences_before_fit(self, preprocessor, sample_data):
-        """Test that create_sequences raises error before fitting."""
-        with pytest.raises(ValueError, match="must be fitted"):
-            preprocessor.create_sequences(sample_data)
 
     def test_transform_method(self, preprocessor, sample_data):
         """Test the transform method."""
-        preprocessor.fit(sample_data)
+        preprocessor.fit_transform(sample_data)
         transformed_data = preprocessor.transform(sample_data)
 
-        # Check that data is transformed correctly
-        assert isinstance(transformed_data, pd.DataFrame)
+        assert isinstance(transformed_data, np.ndarray)
         assert len(transformed_data) == len(sample_data)
-
-        # Check that target values are scaled
-        original_mean = sample_data['value'].mean()
-        transformed_mean = transformed_data['value'].mean()
-        assert abs(transformed_mean) < abs(original_mean)  # Should be closer to 0
+        # Values should be scaled to [0, 1]
+        assert transformed_data.min() >= 0.0 - 1e-9
+        assert transformed_data.max() <= 1.0 + 1e-9
 
     def test_create_sequences(self, preprocessor, sample_data):
         """Test sequence creation."""
-        preprocessor.fit(sample_data)  # type: ignore
-        X, y = preprocessor.create_sequences(sample_data)  # type: ignore
+        scaled_data = preprocessor.fit_transform(sample_data)
+        X, y = preprocessor.create_sequences(scaled_data, forecast_horizon=1)
 
-        # Check shapes
-        expected_samples = (  # type: ignore
-            len(sample_data) - preprocessor.sequence_length  # type: ignore
-            - preprocessor.forecast_horizon + 1  # type: ignore
-        )
-        expected_features = len(preprocessor.feature_columns) + 1  # type: ignore  # +1 for target
+        expected_samples = len(scaled_data) - preprocessor.sequence_length - 1 + 1
+        assert X.shape == (expected_samples, preprocessor.sequence_length)
+        assert y.shape == (expected_samples, 1)
 
-        assert X.shape == (  # type: ignore
-            expected_samples, preprocessor.sequence_length, expected_features
-        )
-        assert y.shape == (expected_samples, preprocessor.forecast_horizon)  # type: ignore
+    def test_create_sequences_with_forecast_horizon(self, preprocessor, sample_data):
+        """Test sequence creation with multi-step forecast horizon."""
+        scaled_data = preprocessor.fit_transform(sample_data)
+        forecast_horizon = 7
+        X, y = preprocessor.create_sequences(scaled_data, forecast_horizon=forecast_horizon)
 
-        # Check data types
-        assert X.dtype == np.float32  # type: ignore
-        assert y.dtype == np.float32  # type: ignore
+        expected_samples = len(scaled_data) - preprocessor.sequence_length - forecast_horizon + 1
+        assert X.shape == (expected_samples, preprocessor.sequence_length)
+        assert y.shape == (expected_samples, forecast_horizon)
 
-    def test_create_sequences_insufficient_data(self, preprocessor):  # type: ignore
+    def test_create_sequences_insufficient_data(self):
         """Test sequence creation with insufficient data."""
-        # Create data shorter than sequence length
-        short_data = pd.DataFrame({  # type: ignore
-            'date': pd.date_range('2020-01-01', periods=5),  # type: ignore
-            'value': np.random.randn(5),  # type: ignore
-            'feature_1': np.random.randn(5)  # type: ignore
+        preprocessor = TimeSeriesPreprocessor(sequence_length=60)
+        short_data = pd.DataFrame({
+            'value': np.random.randn(5),
         })
 
-        preprocessor.fit(short_data)  # type: ignore
+        scaled_data = preprocessor.fit_transform(short_data)
+        X, y = preprocessor.create_sequences(scaled_data, forecast_horizon=1)
 
-        with pytest.raises(ValueError, match="not enough data"):  # type: ignore
-            preprocessor.create_sequences(short_data)  # type: ignore
+        # Not enough data for any sequences
+        assert len(X) == 0
+        assert len(y) == 0
 
-    def test_fit_transform(self, preprocessor, sample_data):  # type: ignore
-        """Test fit_transform method."""
-        transformed_data = preprocessor.fit_transform(sample_data)  # type: ignore
+    def test_inverse_transform(self, preprocessor, sample_data):
+        """Test inverse transformation recovers original values."""
+        original_values = sample_data['value'].values
+        scaled_data = preprocessor.fit_transform(sample_data)
+        recovered = preprocessor.inverse_transform(scaled_data)
 
-        assert preprocessor.is_fitted is True  # type: ignore
-        assert isinstance(transformed_data, pd.DataFrame)  # type: ignore
-        assert len(transformed_data) == len(sample_data)  # type: ignore
+        np.testing.assert_allclose(original_values, recovered, rtol=1e-5)
 
-    def test_inverse_transform_target(self, preprocessor, sample_data):  # type: ignore
-        """Test inverse transformation of target values."""
-        preprocessor.fit(sample_data)  # type: ignore
-        transformed_data = preprocessor.transform(sample_data)  # type: ignore
+    def test_inverse_transform_before_fit(self, preprocessor):
+        """Test that inverse_transform raises error before fitting."""
+        with pytest.raises(ValueError, match="not fitted"):
+            preprocessor.inverse_transform(np.array([0.5, 0.6]))
 
-        # Transform and inverse transform target
-        original_target = sample_data['value'].values.reshape(-1, 1)  # type: ignore
-        transformed_target = transformed_data['value'].values.reshape(-1, 1)  # type: ignore
-        inverse_transformed = preprocessor.inverse_transform_target(transformed_target)  # type: ignore
-
-        # Check that inverse transformation recovers original values
-        np.testing.assert_allclose(original_target, inverse_transformed, rtol=1e-5)  # type: ignore
-
-    def test_sequence_consistency(self, preprocessor, sample_data):  # type: ignore
+    def test_sequence_consistency(self, preprocessor, sample_data):
         """Test that sequences are created consistently."""
-        preprocessor.fit(sample_data)  # type: ignore
+        scaled_data = preprocessor.fit_transform(sample_data)
 
-        # Create sequences multiple times
-        X1, y1 = preprocessor.create_sequences(sample_data)  # type: ignore
-        X2, y2 = preprocessor.create_sequences(sample_data)  # type: ignore
+        X1, y1 = preprocessor.create_sequences(scaled_data)
+        X2, y2 = preprocessor.create_sequences(scaled_data)
 
-        # Should be identical
-        np.testing.assert_array_equal(X1, X2)  # type: ignore
-        np.testing.assert_array_equal(y1, y2)  # type: ignore
+        np.testing.assert_array_equal(X1, X2)
+        np.testing.assert_array_equal(y1, y2)
 
-    def test_date_sorting(self, preprocessor):  # type: ignore
-        """Test that data is sorted by date correctly."""
-        # Create unsorted data
-        dates = pd.date_range('2020-01-01', periods=10)  # type: ignore
-        unsorted_data = pd.DataFrame({  # type: ignore
-            'date': dates,  # type: ignore
-            'value': np.arange(10),  # type: ignore
-            'feature_1': np.arange(10) * 2  # type: ignore
-        })
-
-        # Shuffle the data
-        unsorted_data = unsorted_data.sample(frac=1).reset_index(drop=True)  # type: ignore
-
-        preprocessor.fit(unsorted_data)  # type: ignore
-        transformed_data = preprocessor.transform(unsorted_data)  # type: ignore
-
-        # Check that dates are sorted
-        assert transformed_data['date'].is_monotonic_increasing  # type: ignore
-
-    def test_missing_values_handling(self, preprocessor):  # type: ignore
-        """Test handling of missing values."""
-        data_with_nan = pd.DataFrame({  # type: ignore
-            'date': pd.date_range('2020-01-01', periods=20),  # type: ignore
-            'value': [1, 2, np.nan, 4, 5] * 4,  # type: ignore
-            'feature_1': np.random.randn(20)  # type: ignore
-        })
-
-        # Should handle missing values gracefully
-        with pytest.raises(ValueError, match="contains missing values"):  # type: ignore
-            preprocessor.fit(data_with_nan)  # type: ignore
-
-    def test_feature_scaling(self, preprocessor, sample_data):  # type: ignore
-        """Test that features are scaled properly."""
-        preprocessor.fit(sample_data)  # type: ignore
-        transformed_data = preprocessor.transform(sample_data)  # type: ignore
-
-        # Check that features are approximately standardized
-        for feature in preprocessor.feature_columns:  # type: ignore
-            feature_values = transformed_data[feature].values  # type: ignore
-            assert abs(feature_values.mean()) < 0.1  # type: ignore  # Should be close to 0
-            assert abs(feature_values.std() - 1.0) < 0.1  # type: ignore  # Should be close to 1
-
-    def test_different_sequence_parameters(self, sample_data):  # type: ignore
-        """Test with different sequence length and forecast horizon."""
-        preprocessor = TimeSeriesPreprocessor(  # type: ignore
+    def test_different_sequence_parameters(self, sample_data):
+        """Test with different sequence length."""
+        preprocessor = TimeSeriesPreprocessor(
             target_column='value',
-            date_column='date',
             sequence_length=30,
-            forecast_horizon=7
         )
 
-        preprocessor.fit(sample_data)  # type: ignore
-        X, y = preprocessor.create_sequences(sample_data)  # type: ignore
+        scaled_data = preprocessor.fit_transform(sample_data)
+        X, y = preprocessor.create_sequences(scaled_data, forecast_horizon=7)
 
-        assert X.shape[1] == 30  # type: ignore  # sequence_length
-        assert y.shape[1] == 7  # type: ignore   # forecast_horizon
+        assert X.shape[1] == 30  # sequence_length
+        assert y.shape[1] == 7   # forecast_horizon
 
-    def test_edge_case_single_feature(self):  # type: ignore
-        """Test with only target column (no additional features)."""
-        data = pd.DataFrame({  # type: ignore
-            'date': pd.date_range('2020-01-01', periods=50),  # type: ignore
-            'value': np.random.randn(50)  # type: ignore
+    def test_edge_case_single_feature(self):
+        """Test with minimal data that still works."""
+        data = pd.DataFrame({
+            'value': np.random.randn(50)
         })
 
-        preprocessor = TimeSeriesPreprocessor(  # type: ignore
+        preprocessor = TimeSeriesPreprocessor(
             target_column='value',
-            date_column='date',
             sequence_length=10,
-            forecast_horizon=1
         )
 
-        preprocessor.fit(data)  # type: ignore
-        X, y = preprocessor.create_sequences(data)  # type: ignore
+        scaled_data = preprocessor.fit_transform(data)
+        X, y = preprocessor.create_sequences(scaled_data, forecast_horizon=1)
 
-        # Should work with only target column
-        assert X.shape[2] == 1  # type: ignore  # Only target feature
-        assert y.shape[1] == 1  # type: ignore  # forecast_horizon
+        assert X.shape[1] == 10
+        assert y.shape[1] == 1
+        assert len(X) == 50 - 10 - 1 + 1
 
-    def test_reproducibility(self, preprocessor, sample_data):  # type: ignore
+    def test_reproducibility(self, sample_data):
         """Test that preprocessing is reproducible."""
-        # Fit twice and compare results
-        preprocessor1 = TimeSeriesPreprocessor(  # type: ignore
+        preprocessor1 = TimeSeriesPreprocessor(
             target_column='value',
-            date_column='date',
             sequence_length=10,
-            forecast_horizon=1
         )
 
-        preprocessor2 = TimeSeriesPreprocessor(  # type: ignore
+        preprocessor2 = TimeSeriesPreprocessor(
             target_column='value',
-            date_column='date',
             sequence_length=10,
-            forecast_horizon=1
         )
 
-        preprocessor1.fit(sample_data)  # type: ignore
-        preprocessor2.fit(sample_data)  # type: ignore
+        scaled1 = preprocessor1.fit_transform(sample_data)
+        scaled2 = preprocessor2.fit_transform(sample_data)
 
-        X1, y1 = preprocessor1.create_sequences(sample_data)  # type: ignore
-        X2, y2 = preprocessor2.create_sequences(sample_data)  # type: ignore
+        X1, y1 = preprocessor1.create_sequences(scaled1)
+        X2, y2 = preprocessor2.create_sequences(scaled2)
 
-        # Results should be identical
-        np.testing.assert_array_equal(X1, X2)  # type: ignore
-        np.testing.assert_array_equal(y1, y2)  # type: ignore
+        np.testing.assert_array_equal(X1, X2)
+        np.testing.assert_array_equal(y1, y2)
+
+    def test_split_data(self, preprocessor, sample_data):
+        """Test data splitting into train/val/test sets."""
+        scaled_data = preprocessor.fit_transform(sample_data)
+        X, y = preprocessor.create_sequences(scaled_data)
+
+        X_train, X_val, X_test, y_train, y_val, y_test = preprocessor.split_data(X, y)
+
+        # All data should be accounted for
+        assert len(X_train) + len(X_val) + len(X_test) == len(X)
+        assert len(y_train) + len(y_val) + len(y_test) == len(y)
+
+        # Train should be the largest split
+        assert len(X_train) > len(X_val)
+        assert len(X_train) > len(X_test)
