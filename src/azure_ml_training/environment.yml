@@ -1,18 +1,16 @@
-
-name: pytorch-env
+name: pytorch-lstm-env
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
 dependencies:
-  - python=3.11
+  - python=3.9
+  - pytorch>=1.12.0
+  - numpy
+  - pandas
+  - scikit-learn
   - pip
   - pip:
-    - torch>=2.0.0
-    - torchvision
-    - pandas
-    - numpy
-    - scikit-learn
-    - mlflow
-    - joblib
+    - mlflow>=2.0.0
     - azure-ai-ml
-    - azureml-mlflow
-channels:
-  - conda-forge
-  - pytorch
+    - joblib
